@@ -1,0 +1,160 @@
+"""Main gesture car control application."""
+
+from __future__ import annotations
+
+import time
+from pathlib import Path
+from typing import Optional
+
+import cv2
+import numpy as np
+
+from gesture_car.driver import ControlMode, GestureDriver
+from gesture_car.keyboard_out import KeyScheme, KeyboardDriver
+from gesture_car.overlay import draw_hands, draw_help, draw_hud, draw_pedals, draw_steering_wheel
+from gesture_car.tracker import HandTracker
+
+
+class GestureCarApp:
+    INFER_WIDTH = 960
+
+    def __init__(self, camera_index: int = 0) -> None:
+        root = Path(__file__).resolve().parent
+        model = root / "models" / "hand_landmarker.task"
+        self.tracker = HandTracker(model, max_hands=2)
+        self.driver = GestureDriver()
+        self.keyboard = KeyboardDriver()
+        self.camera_index = camera_index
+
+        self.enabled = False
+        self.show_help = True
+        self._fps = 0.0
+        self._frames = 0
+        self._fps_t = time.perf_counter()
+
+    def run(self) -> int:
+        cap = self._open_camera()
+        if cap is None:
+            print("ERROR: Could not open webcam.")
+            return 1
+
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        win = "Gesture Car Control"
+        cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(win, 960, 540)
+
+        print("Gesture Car Control")
+        print("  TAB  = arm / pause keyboard output")
+        print("  M    = toggle wheel / pointer mode")
+        print("  K    = toggle arrow keys / WASD")
+        print("  H    = help overlay")
+        print("  Q    = quit")
+        print()
+        print("Tip: arm controls (TAB), click your browser game, then drive with gestures.")
+
+        try:
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+
+                frame = cv2.flip(frame, 1)
+                hands = self.tracker.process(
+                    frame, mirrored=True, infer_max_width=self.INFER_WIDTH,
+                )
+                state = self.driver.update(hands, enabled=self.enabled)
+                keys = self.keyboard.apply(state, enabled=self.enabled)
+
+                draw_hands(
+                    frame,
+                    hands,
+                    palm_labels={
+                        "Left": state.left_palm,
+                        "Right": state.right_palm,
+                    },
+                )
+                draw_steering_wheel(frame, state)
+                draw_pedals(frame, state)
+                draw_hud(
+                    frame,
+                    state,
+                    enabled=self.enabled,
+                    keys=keys,
+                    fps=self._fps,
+                    scheme=self.keyboard.scheme.name,
+                )
+                if self.show_help:
+                    draw_help(frame, self._help_lines())
+
+                self._tick_fps()
+                cv2.imshow(win, frame)
+
+                if not self._handle_key(cv2.waitKey(1) & 0xFF):
+                    break
+        finally:
+            self.keyboard.release_all()
+            self.tracker.close()
+            cap.release()
+            cv2.destroyAllWindows()
+        return 0
+
+    def _open_camera(self) -> Optional[cv2.VideoCapture]:
+        for backend in (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY):
+            cap = cv2.VideoCapture(self.camera_index, backend)
+            if cap.isOpened():
+                return cap
+            cap.release()
+        cap = cv2.VideoCapture(self.camera_index)
+        return cap if cap.isOpened() else None
+
+    def _handle_key(self, key: int) -> bool:
+        if key in (ord("q"), ord("Q"), 27):
+            return False
+        if key == 9:  # TAB
+            self.enabled = not self.enabled
+            if not self.enabled:
+                self.keyboard.release_all()
+            print("Controls", "ARMED" if self.enabled else "PAUSED")
+        if key in (ord("m"), ord("M")):
+            mode = (
+                ControlMode.POINTER
+                if self.driver.mode == ControlMode.WHEEL
+                else ControlMode.WHEEL
+            )
+            self.driver.set_mode(mode)
+            print("Mode:", mode.name)
+        if key in (ord("k"), ord("K")):
+            scheme = (
+                KeyScheme.WASD
+                if self.keyboard.scheme == KeyScheme.ARROWS
+                else KeyScheme.ARROWS
+            )
+            self.keyboard.scheme = scheme
+            self.keyboard.release_all()
+            print("Keys:", scheme.name)
+        if key in (ord("h"), ord("H")):
+            self.show_help = not self.show_help
+        return True
+
+    def _help_lines(self) -> list[str]:
+        return [
+            "WHEEL mode: both hands, tilt wheel to steer",
+            "  Both palms CLOSED = full speed",
+            "  Both palms OPEN = brake",
+            "  Hold pose ~0.5s to confirm (fewer mistakes)",
+            "POINTER mode: one hand left/right to steer",
+            "  Closed palm = gas | open palm = brake",
+            "TAB arm | click browser game | drive",
+            "M mode | K arrows/WASD | Q quit",
+        ]
+
+    def _tick_fps(self) -> None:
+        self._frames += 1
+        now = time.perf_counter()
+        if now - self._fps_t >= 1.0:
+            self._fps = self._frames / (now - self._fps_t)
+            self._frames = 0
+            self._fps_t = now
