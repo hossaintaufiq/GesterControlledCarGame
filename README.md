@@ -153,6 +153,7 @@ GesterControlledCarGame/
     ├── app.py                  # Main realtime loop and key handlers
     ├── camera.py               # Threaded capture, newest-frame-wins
     ├── filters.py              # Frame-rate independent smoothing
+    ├── window.py               # Borderless topmost browser PiP
     ├── tracker.py              # Hand detection + landmark smoothing
     ├── gestures.py             # Palm state classifier
     ├── driver.py               # Gesture-to-control policy
@@ -210,6 +211,26 @@ Use **[Slow Roads](https://slowroads.io)**. Its forgiving endless-driving
 format and native arrow/WASD controls make it the best match for this
 gesture controller. Press `G` inside the app to open it, press `TAB` to arm
 the controller, then click the game window.
+
+### Browser Picture-in-Picture and Recording
+
+The camera opens as a borderless 480x270 picture-in-picture window in the
+bottom-right corner. It stays above a maximized browser and includes:
+
+- mirrored webcam video
+- tracked hand skeletons and palm-state labels
+- current steering/pedal action
+- live FPS
+
+Recommended recording workflow:
+
+1. Start the app with `python main.py`.
+2. Click the camera overlay and press `TAB` to arm controls.
+3. Press `G` to open Slow Roads.
+4. Maximize the browser and start driving.
+5. Record using **Display Capture / Screen Capture** so both the browser and
+   the separate PiP window are included. Browser-only "Window Capture" may
+   omit the overlay.
 
 ---
 

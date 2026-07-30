@@ -94,8 +94,41 @@ def draw_hud(
     *,
     enabled: bool,
     fps: float = 0.0,
+    compact: bool = False,
 ) -> None:
     h, w = frame.shape[:2]
+    if compact:
+        ui.panel(frame, 0, 0, w, 34, alpha=0.72)
+        status = "LIVE" if enabled else "PAUSED"
+        status_color = ui.SUCCESS if enabled else ui.WARN
+        ui.put_text(
+            frame, status, (10, 23), scale=0.48, color=status_color, weight=2
+        )
+        ui.put_text(
+            frame, f"{fps:.0f}fps", (78, 23), scale=0.38, color=ui.MUTED
+        )
+        action_color = ui.DANGER if state.pedal_label == "BRAKE" else ui.SUCCESS
+        action = f"{state.steer_label} | {state.pedal_label}"
+        ui.put_text(
+            frame,
+            action,
+            (w - 155, 23),
+            scale=0.43,
+            color=action_color,
+            weight=2,
+        )
+        if not enabled:
+            ui.put_text(
+                frame,
+                "CLICK VIDEO + TAB",
+                (w // 2 - 92, h // 2),
+                scale=0.58,
+                color=ui.WARN,
+                weight=2,
+            )
+        cv2.rectangle(frame, (0, 0), (w - 1, h - 1), ui.ACCENT, 2)
+        return
+
     ui.panel(frame, 0, 0, w, 52, alpha=0.72)
 
     status = "LIVE" if enabled else "PAUSED"

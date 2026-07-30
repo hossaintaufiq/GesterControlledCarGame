@@ -14,6 +14,7 @@ from gesture_car.filters import clamp_dt
 from gesture_car.keyboard_out import KeyScheme, KeyboardDriver
 from gesture_car.overlay import draw_hands, draw_help, draw_hud, draw_pedals, draw_steering_wheel
 from gesture_car.tracker import HandTracker
+from gesture_car.window import PictureInPictureWindow
 
 
 class GestureCarApp:
@@ -21,6 +22,7 @@ class GestureCarApp:
     # same landmark quality.
     INFER_WIDTH = 640
     CAPTURE_SIZE = (1280, 720)
+    PIP_SIZE = (480, 270)
     GAME_URL = "https://slowroads.io"
 
     def __init__(self, camera_index: int = 0) -> None:
@@ -45,8 +47,12 @@ class GestureCarApp:
             return 1
 
         win = "Gesture Car Control"
-        cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(win, 960, 540)
+        pip = PictureInPictureWindow(
+            win,
+            width=self.PIP_SIZE[0],
+            height=self.PIP_SIZE[1],
+        )
+        pip.create()
 
         print("Gesture Car Control")
         print("  TAB  = arm / pause keyboard output")
@@ -84,8 +90,13 @@ class GestureCarApp:
                 state = self.driver.update(hands, enabled=self.enabled, dt=dt)
                 self.keyboard.apply(state, enabled=self.enabled)
 
-                draw_hands(
+                display = cv2.resize(
                     frame,
+                    self.PIP_SIZE,
+                    interpolation=cv2.INTER_AREA,
+                )
+                draw_hands(
+                    display,
                     hands,
                     palm_labels={
                         "Left": state.left_palm,
@@ -96,14 +107,20 @@ class GestureCarApp:
                         "Right": state.right_openness,
                     },
                 )
-                draw_steering_wheel(frame, state)
-                draw_pedals(frame, state)
-                draw_hud(frame, state, enabled=self.enabled, fps=self._fps)
+                draw_steering_wheel(display, state)
+                draw_pedals(display, state)
+                draw_hud(
+                    display,
+                    state,
+                    enabled=self.enabled,
+                    fps=self._fps,
+                    compact=True,
+                )
                 if self.show_help:
-                    draw_help(frame, self._help_lines())
+                    draw_help(display, self._help_lines())
 
                 self._tick_fps(now)
-                cv2.imshow(win, frame)
+                pip.show(display)
 
                 if not self._handle_key(cv2.waitKey(1) & 0xFF):
                     break
