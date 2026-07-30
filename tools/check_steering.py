@@ -16,13 +16,27 @@ from gesture_car.keyboard_out import KeyboardDriver  # noqa: E402
 from gesture_car.steer import SteerSmoother  # noqa: E402
 
 
-def settled_steer(tilt_deg: float, frames: int = 240) -> float:
+def settled_steer(tilt_deg: float, fps: float = 30.0, seconds: float = 8.0) -> float:
     smoother = SteerSmoother()
     angle = math.radians(tilt_deg)
+    dt = 1.0 / fps
     value = 0.0
-    for _ in range(frames):
-        value = smoother.from_wheel_angle(angle, GestureDriver.WHEEL_MAX_ANGLE)
+    for _ in range(int(fps * seconds)):
+        value = smoother.from_wheel_angle(angle, GestureDriver.WHEEL_MAX_ANGLE, dt)
     return value
+
+
+def rise_time(tilt_deg: float, fps: float, target: float = 0.9) -> float:
+    """Seconds to reach `target` of full deflection — should not vary with FPS."""
+    smoother = SteerSmoother()
+    angle = math.radians(tilt_deg)
+    dt = 1.0 / fps
+    final = settled_steer(tilt_deg, fps)
+    for step in range(int(fps * 5)):
+        value = smoother.from_wheel_angle(angle, GestureDriver.WHEEL_MAX_ANGLE, dt)
+        if final and abs(value) >= abs(final) * target:
+            return (step + 1) * dt
+    return float("nan")
 
 
 def measured_duty(steer: float, samples: int = 400) -> float:
@@ -47,11 +61,17 @@ def main() -> int:
         key = "right" if duty > 0 else "-"
         print(f"{tilt:>5}d {steer:>7.2f} {key:>6} {duty:>6.0%}")
 
+    print("\nFrame-rate independence (30 deg tilt)")
+    for fps in (15, 30, 60):
+        steer = settled_steer(30, fps)
+        rise = rise_time(30, fps)
+        print(f"  {fps:>3} fps -> steer={steer:.2f}  time to 90%={rise * 1000:5.0f} ms")
+
     smoother = SteerSmoother()
     for _ in range(240):
-        smoother.from_wheel_angle(math.radians(40), GestureDriver.WHEEL_MAX_ANGLE)
+        smoother.from_wheel_angle(math.radians(40), GestureDriver.WHEEL_MAX_ANGLE, 1 / 30)
     for _ in range(240):
-        smoother.decay()
+        smoother.decay(1 / 30)
     print(f"\nrecenter after release: {smoother.read():.3f}")
     return 0
 

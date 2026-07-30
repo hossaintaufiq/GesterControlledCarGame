@@ -62,7 +62,7 @@ This is a strong portfolio project for roles in:
 
 ```mermaid
 flowchart LR
-    A[Webcam Frame] --> B[HandTracker\nMediaPipe Landmarker]
+    A[CameraStream\nthreaded capture] --> B[HandTracker\nMediaPipe Landmarker]
     B --> C[Gesture Layer\nPalmAnalyzer]
     C --> D[Control Layer\nGestureDriver]
     D --> E[Steering Filter\nSteerSmoother]
@@ -151,6 +151,8 @@ GesterControlledCarGame/
 └── gesture_car/
     ├── __init__.py
     ├── app.py                  # Main realtime loop and key handlers
+    ├── camera.py               # Threaded capture, newest-frame-wins
+    ├── filters.py              # Frame-rate independent smoothing
     ├── tracker.py              # Hand detection + landmark smoothing
     ├── gestures.py             # Palm state classifier
     ├── driver.py               # Gesture-to-control policy
@@ -162,11 +164,12 @@ GesterControlledCarGame/
         └── hand_landmarker.task
 ```
 
-Tuning utilities (no webcam required):
+Tuning and diagnostic utilities:
 
 ```bash
-python tools/check_gestures.py   # verifies fist/open-palm classification
-python tools/check_steering.py   # prints the steering response curve
+python tools/check_gestures.py   # fist/open-palm classification (no webcam)
+python tools/check_steering.py   # steering response curve (no webcam)
+python tools/bench.py            # capture/inference/loop FPS (needs webcam)
 ```
 
 ---
@@ -224,7 +227,35 @@ the controller, then click the game window.
 
 ---
 
-## Performance and Reliability Notes
+## Performance
+
+Capture and inference each cost roughly 25–34 ms. Running them sequentially
+halved the frame rate, so capture happens on a background thread and always
+serves the newest frame, dropping stale ones to keep latency low.
+
+Measured on this machine with `python tools/bench.py`:
+
+| Stage | Result |
+|-------|--------|
+| Threaded capture | 30 fps at 1280x720 (camera hardware limit) |
+| Inference at 960 px | 57.7 ms |
+| Inference at 640 px | 24.2 ms |
+| Full loop at 960 px | 22.5 fps |
+| Full loop at 640 px | **26.7 fps** |
+
+Two findings drove the tuning:
+
+- MediaPipe rescales input to a fixed model size internally, so feeding it
+  640 px instead of 960 px cuts inference time by more than half with no loss
+  of landmark quality.
+- The webcam caps at 30 fps, which is now the limiting factor rather than the
+  pipeline.
+
+All smoothing constants are expressed against a 30 fps reference and rescaled
+by the measured frame delta (`gesture_car/filters.py`), so the control feel is
+identical at 15, 30, or 60 fps instead of getting twitchier as FPS rises.
+
+## Reliability Notes
 
 - Input is filtered at multiple stages to reduce false triggers.
 - Steering uses smoothing + hysteresis to maintain directional stability around center.

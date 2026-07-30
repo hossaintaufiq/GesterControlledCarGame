@@ -93,6 +93,7 @@ def draw_hud(
     state: CarControlState,
     *,
     enabled: bool,
+    fps: float = 0.0,
 ) -> None:
     h, w = frame.shape[:2]
     ui.panel(frame, 0, 0, w, 52, alpha=0.72)
@@ -101,6 +102,7 @@ def draw_hud(
     status_color = ui.SUCCESS if enabled else ui.WARN
     ui.put_text(frame, "GESTURE DRIVE", (16, 33), scale=0.65, color=ui.ACCENT, weight=2)
     ui.put_text(frame, status, (205, 33), scale=0.52, color=status_color, weight=2)
+    ui.put_text(frame, f"{fps:.0f}fps", (285, 33), scale=0.45, color=ui.MUTED)
 
     action_color = ui.DANGER if state.pedal_label == "BRAKE" else ui.SUCCESS
     action = f"{state.steer_label}  |  {state.pedal_label}"

@@ -7,6 +7,7 @@ from enum import Enum, auto
 
 import numpy as np
 
+from gesture_car.filters import REF_DT, ema_alpha
 from gesture_car.tracker import HandResult
 
 WRIST = 0
@@ -50,7 +51,7 @@ class PalmReading:
 class _HandMemory:
     state: PalmState = PalmState.NEUTRAL
     pending: PalmState = PalmState.NEUTRAL
-    pending_frames: int = 0
+    pending_time: float = 0.0
     openness_ema: float = 0.5
     samples: list[float] = field(default_factory=list)
 
@@ -66,12 +67,12 @@ class PalmAnalyzer:
     closed_exit: float = 0.42
     open_enter: float = 0.72
     open_exit: float = 0.55
-    confirm_frames: int = 2
+    confirm_seconds: float = 0.07
     median_window: int = 5
     openness_smooth: float = 0.45
     _memory: dict[str, _HandMemory] = field(default_factory=dict)
 
-    def analyze(self, hand: HandResult) -> PalmReading:
+    def analyze(self, hand: HandResult, dt: float = REF_DT) -> PalmReading:
         mem = self._memory.setdefault(hand.handedness, _HandMemory())
 
         if hand.score < self.min_hand_score:
@@ -86,7 +87,9 @@ class PalmAnalyzer:
         if len(mem.samples) > self.median_window:
             mem.samples.pop(0)
         median_open = float(np.median(mem.samples))
-        mem.openness_ema = self._lerp(mem.openness_ema, median_open, self.openness_smooth)
+        mem.openness_ema = self._lerp(
+            mem.openness_ema, median_open, ema_alpha(self.openness_smooth, dt)
+        )
         openness = mem.openness_ema
 
         if mem.state == PalmState.CLOSED and openness < self.closed_exit:
@@ -102,15 +105,15 @@ class PalmAnalyzer:
 
         if candidate == mem.state:
             mem.pending = candidate
-            mem.pending_frames = 0
+            mem.pending_time = 0.0
         elif candidate == mem.pending:
-            mem.pending_frames += 1
-            if mem.pending_frames >= self.confirm_frames:
+            mem.pending_time += dt
+            if mem.pending_time >= self.confirm_seconds:
                 mem.state = candidate
-                mem.pending_frames = 0
+                mem.pending_time = 0.0
         else:
             mem.pending = candidate
-            mem.pending_frames = 1
+            mem.pending_time = dt
 
         return PalmReading(
             state=mem.state,

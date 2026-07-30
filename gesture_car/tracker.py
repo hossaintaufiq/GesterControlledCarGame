@@ -8,6 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
+from gesture_car.filters import REF_DT, ema_alpha
+
 
 @dataclass
 class HandResult:
@@ -22,13 +24,13 @@ class LandmarkSmoother:
         self.alpha = alpha
         self._state: dict[str, np.ndarray] = {}
 
-    def apply(self, key: str, landmarks: np.ndarray) -> np.ndarray:
+    def apply(self, key: str, landmarks: np.ndarray, dt: float = REF_DT) -> np.ndarray:
         prev = self._state.get(key)
         if prev is None:
             smooth = landmarks.copy()
         else:
             delta = float(np.mean(np.abs(landmarks[:, :2] - prev[:, :2])))
-            blend = min(0.82, self.alpha + delta * 2.0)
+            blend = ema_alpha(min(0.82, self.alpha + delta * 2.0), dt)
             smooth = prev * (1.0 - blend) + landmarks * blend
         self._state[key] = smooth
         return smooth
@@ -67,7 +69,8 @@ class HandTracker:
         frame_bgr: np.ndarray,
         *,
         mirrored: bool = True,
-        infer_max_width: int = 960,
+        infer_max_width: int = 640,
+        dt: float = REF_DT,
     ) -> list[HandResult]:
         import cv2
         from mediapipe import Image as MpImage, ImageFormat
@@ -112,7 +115,7 @@ class HandTracker:
 
             key = handedness if handedness not in seen else f"{handedness}_{i}"
             seen.add(key)
-            pts = self._smoother.apply(key, pts)
+            pts = self._smoother.apply(key, pts, dt)
             hands.append(
                 HandResult(
                     landmarks=pts,

@@ -57,10 +57,15 @@ def build_hand(curl_deg: float, *, rotation_deg: float = 0.0, scale: float = 1.0
     return lms
 
 
-def settle(analyzer: PalmAnalyzer, lms: np.ndarray, frames: int = 15) -> tuple[PalmState, float]:
+def settle(
+    analyzer: PalmAnalyzer,
+    lms: np.ndarray,
+    frames: int = 15,
+    dt: float = 1 / 30,
+) -> tuple[PalmState, float]:
     reading = None
     for _ in range(frames):
-        reading = analyzer.analyze(HandResult(lms, "Right", 0.9))
+        reading = analyzer.analyze(HandResult(lms, "Right", 0.9), dt)
     assert reading is not None
     return reading.state, reading.openness
 
@@ -86,6 +91,14 @@ def main() -> int:
         flag = "ok " if ok else "FAIL"
         want = "-" if expected is None else expected.name
         print(f"{flag} {name:26s} openness={openness:.2f} state={state.name:7s} expected={want}")
+
+    print("\nFrame-rate independence (same pose, different FPS)")
+    for fps in (15, 30, 60):
+        analyzer = PalmAnalyzer()
+        state, openness = settle(
+            analyzer, build_hand(0.0), frames=int(fps * 0.5), dt=1.0 / fps
+        )
+        print(f"  {fps:>3} fps -> openness={openness:.2f} state={state.name}")
 
     print("\nfailures:", failures)
     return 1 if failures else 0

@@ -2,20 +2,25 @@
 
 from __future__ import annotations
 
+import time
 import webbrowser
 from pathlib import Path
-from typing import Optional
 
 import cv2
 
+from gesture_car.camera import CameraStream
 from gesture_car.driver import ControlMode, GestureDriver
+from gesture_car.filters import clamp_dt
 from gesture_car.keyboard_out import KeyScheme, KeyboardDriver
 from gesture_car.overlay import draw_hands, draw_help, draw_hud, draw_pedals, draw_steering_wheel
 from gesture_car.tracker import HandTracker
 
 
 class GestureCarApp:
-    INFER_WIDTH = 960
+    # MediaPipe rescales internally, so 640 costs ~20% less than 960 for the
+    # same landmark quality.
+    INFER_WIDTH = 640
+    CAPTURE_SIZE = (1280, 720)
     GAME_URL = "https://slowroads.io"
 
     def __init__(self, camera_index: int = 0) -> None:
@@ -28,16 +33,16 @@ class GestureCarApp:
 
         self.enabled = False
         self.show_help = False
+        self._fps = 0.0
+        self._frames = 0
+        self._fps_time = time.perf_counter()
 
     def run(self) -> int:
-        cap = self._open_camera()
-        if cap is None:
+        width, height = self.CAPTURE_SIZE
+        stream = CameraStream(self.camera_index, width=width, height=height)
+        if not stream.start():
             print("ERROR: Could not open webcam.")
             return 1
-
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         win = "Gesture Car Control"
         cv2.namedWindow(win, cv2.WINDOW_NORMAL)
@@ -54,17 +59,29 @@ class GestureCarApp:
         print()
         print("Tip: arm controls (TAB), click your browser game, then drive with gestures.")
 
+        last_seq = -1
+        last_time = time.perf_counter()
         try:
             while True:
-                ok, frame = cap.read()
-                if not ok:
-                    break
+                frame, last_seq = stream.read(last_seq)
+                if frame is None:
+                    # No new camera frame yet; stay responsive to key presses.
+                    if not self._handle_key(cv2.waitKey(1) & 0xFF):
+                        break
+                    continue
+
+                now = time.perf_counter()
+                dt = clamp_dt(now - last_time)
+                last_time = now
 
                 frame = cv2.flip(frame, 1)
                 hands = self.tracker.process(
-                    frame, mirrored=True, infer_max_width=self.INFER_WIDTH,
+                    frame,
+                    mirrored=True,
+                    infer_max_width=self.INFER_WIDTH,
+                    dt=dt,
                 )
-                state = self.driver.update(hands, enabled=self.enabled)
+                state = self.driver.update(hands, enabled=self.enabled, dt=dt)
                 self.keyboard.apply(state, enabled=self.enabled)
 
                 draw_hands(
@@ -81,14 +98,11 @@ class GestureCarApp:
                 )
                 draw_steering_wheel(frame, state)
                 draw_pedals(frame, state)
-                draw_hud(
-                    frame,
-                    state,
-                    enabled=self.enabled,
-                )
+                draw_hud(frame, state, enabled=self.enabled, fps=self._fps)
                 if self.show_help:
                     draw_help(frame, self._help_lines())
 
+                self._tick_fps(now)
                 cv2.imshow(win, frame)
 
                 if not self._handle_key(cv2.waitKey(1) & 0xFF):
@@ -96,20 +110,13 @@ class GestureCarApp:
         finally:
             self.keyboard.release_all()
             self.tracker.close()
-            cap.release()
+            stream.release()
             cv2.destroyAllWindows()
         return 0
 
-    def _open_camera(self) -> Optional[cv2.VideoCapture]:
-        for backend in (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY):
-            cap = cv2.VideoCapture(self.camera_index, backend)
-            if cap.isOpened():
-                return cap
-            cap.release()
-        cap = cv2.VideoCapture(self.camera_index)
-        return cap if cap.isOpened() else None
-
     def _handle_key(self, key: int) -> bool:
+        if key == 255:
+            return True
         if key in (ord("q"), ord("Q"), 27):
             return False
         if key == 9:  # TAB
@@ -150,3 +157,11 @@ class GestureCarApp:
             "Both closed = gas | both open = brake",
             "TAB start | G game | H hide | Q quit",
         ]
+
+    def _tick_fps(self, now: float) -> None:
+        self._frames += 1
+        span = now - self._fps_time
+        if span >= 0.5:
+            self._fps = self._frames / span
+            self._frames = 0
+            self._fps_time = now

@@ -8,6 +8,7 @@ from enum import Enum, auto
 
 import numpy as np
 
+from gesture_car.filters import REF_DT, clamp_dt, lerp
 from gesture_car.gestures import PalmAnalyzer, PalmState
 from gesture_car.steer import SteerSmoother
 from gesture_car.tracker import HandResult
@@ -41,8 +42,8 @@ class GestureDriver:
     STEER_GAIN = 1.15
     WHEEL_MAX_ANGLE = 0.72
     MIN_HAND_SCORE = 0.30
-    PEDAL_CONFIRM = 3
-    TRACKING_GRACE_FRAMES = 4
+    PEDAL_CONFIRM_SECONDS = 0.10
+    TRACKING_GRACE_SECONDS = 0.14
     SENSITIVITY_RANGE = (0.4, 1.6)
 
     def __init__(self) -> None:
@@ -51,17 +52,17 @@ class GestureDriver:
         self.steer = SteerSmoother()
         self._smooth_throttle = 0.0
         self._smooth_brake = 0.0
-        self._gas_streak = 0
-        self._brake_streak = 0
+        self._gas_time = 0.0
+        self._brake_time = 0.0
         self._last_reliable: list[HandResult] = []
-        self._tracking_misses = 0
+        self._tracking_gap = 0.0
 
     def set_mode(self, mode: ControlMode) -> None:
         self.mode = mode
         self.palms.reset()
         self.steer.reset()
-        self._gas_streak = 0
-        self._brake_streak = 0
+        self._gas_time = 0.0
+        self._brake_time = 0.0
 
     @property
     def sensitivity(self) -> float:
@@ -74,24 +75,33 @@ class GestureDriver:
         )
         return self.steer.sensitivity
 
-    def update(self, hands: list[HandResult], *, enabled: bool) -> CarControlState:
+    def update(
+        self,
+        hands: list[HandResult],
+        *,
+        enabled: bool,
+        dt: float = REF_DT,
+    ) -> CarControlState:
+        dt = clamp_dt(dt)
         reliable = [h for h in hands if h.score >= self.MIN_HAND_SCORE]
         required = 2 if self.mode == ControlMode.WHEEL else 1
 
         if enabled and len(reliable) >= required:
             self._last_reliable = reliable
-            self._tracking_misses = 0
+            self._tracking_gap = 0.0
         elif enabled and self._last_reliable:
-            self._tracking_misses += 1
-            if self._tracking_misses <= self.TRACKING_GRACE_FRAMES:
+            self._tracking_gap += dt
+            if self._tracking_gap <= self.TRACKING_GRACE_SECONDS:
                 reliable = self._last_reliable
+            else:
+                self._last_reliable = []
         else:
             self._last_reliable = []
-            self._tracking_misses = 0
+            self._tracking_gap = 0.0
 
-        if not enabled or not reliable:
-            smooth_steer = self.steer.decay()
-            self._decay_pedals()
+        if not enabled or len(reliable) < required:
+            smooth_steer = self.steer.decay(dt)
+            self._decay_pedals(dt)
             return self._state(
                 smooth_steer,
                 len(hands),
@@ -99,20 +109,12 @@ class GestureDriver:
             )
 
         if self.mode == ControlMode.WHEEL:
-            if len(reliable) < 2:
-                smooth_steer = self.steer.decay()
-                self._decay_pedals()
-                return self._state(
-                    smooth_steer,
-                    len(hands),
-                    active=False,
-                )
-            raw = self._wheel_controls(reliable)
+            raw = self._wheel_controls(reliable, dt)
         else:
-            raw = self._pointer_controls(reliable[0])
+            raw = self._pointer_controls(reliable[0], dt)
 
-        self._smooth_throttle = self._lerp(self._smooth_throttle, raw["throttle"], 0.28)
-        self._smooth_brake = self._lerp(self._smooth_brake, raw["brake"], 0.32)
+        self._smooth_throttle = lerp(self._smooth_throttle, raw["throttle"], 0.28, dt)
+        self._smooth_brake = lerp(self._smooth_brake, raw["brake"], 0.32, dt)
 
         return self._state(
             raw["steer"],
@@ -150,17 +152,17 @@ class GestureDriver:
             right_openness=right_openness,
         )
 
-    def _wheel_controls(self, hands: list[HandResult]) -> dict:
+    def _wheel_controls(self, hands: list[HandResult], dt: float) -> dict:
         left, right = self._pick_left_right(hands)
-        left_read = self.palms.analyze(left)
-        right_read = self.palms.analyze(right)
+        left_read = self.palms.analyze(left, dt)
+        right_read = self.palms.analyze(right, dt)
 
         lp = self._palm_center(left.landmarks)
         rp = self._palm_center(right.landmarks)
         angle = math.atan2(rp[1] - lp[1], rp[0] - lp[0])
-        steer = self.steer.from_wheel_angle(angle, self.WHEEL_MAX_ANGLE)
+        steer = self.steer.from_wheel_angle(angle, self.WHEEL_MAX_ANGLE, dt)
 
-        throttle, brake = self._pedals_from_palms(left_read.state, right_read.state)
+        throttle, brake = self._pedals_from_palms(left_read.state, right_read.state, dt)
 
         return {
             "steer": steer,
@@ -172,25 +174,12 @@ class GestureDriver:
             "right_openness": right_read.openness,
         }
 
-    def _pointer_controls(self, hand: HandResult) -> dict:
-        reading = self.palms.analyze(hand)
+    def _pointer_controls(self, hand: HandResult, dt: float) -> dict:
+        reading = self.palms.analyze(hand, dt)
         palm_x = float(np.mean([hand.landmarks[i][0] for i in PALM_LANDMARKS]))
-        steer = self.steer.from_pointer_x(palm_x, self.STEER_GAIN)
+        steer = self.steer.from_pointer_x(palm_x, self.STEER_GAIN, dt)
 
-        throttle, brake = 0.0, 0.0
-        if reading.state == PalmState.CLOSED:
-            self._gas_streak += 1
-            self._brake_streak = 0
-            if self._gas_streak >= self.PEDAL_CONFIRM:
-                throttle = 1.0
-        elif reading.state == PalmState.OPEN:
-            self._brake_streak += 1
-            self._gas_streak = 0
-            if self._brake_streak >= self.PEDAL_CONFIRM:
-                brake = 1.0
-        else:
-            self._gas_streak = max(0, self._gas_streak - 1)
-            self._brake_streak = max(0, self._brake_streak - 1)
+        throttle, brake = self._pedals_from_palms(reading.state, reading.state, dt)
 
         label = reading.label
         side = hand.handedness
@@ -204,22 +193,21 @@ class GestureDriver:
             "right_openness": reading.openness if side == "Right" else 0.0,
         }
 
-    def _pedals_from_palms(self, left: PalmState, right: PalmState) -> tuple[float, float]:
-        both_closed = left == PalmState.CLOSED and right == PalmState.CLOSED
-        both_open = left == PalmState.OPEN and right == PalmState.OPEN
-
-        if both_closed:
-            self._gas_streak += 1
-            self._brake_streak = 0
-        elif both_open:
-            self._brake_streak += 1
-            self._gas_streak = 0
+    def _pedals_from_palms(
+        self, left: PalmState, right: PalmState, dt: float
+    ) -> tuple[float, float]:
+        if left == PalmState.CLOSED and right == PalmState.CLOSED:
+            self._gas_time += dt
+            self._brake_time = 0.0
+        elif left == PalmState.OPEN and right == PalmState.OPEN:
+            self._brake_time += dt
+            self._gas_time = 0.0
         else:
-            self._gas_streak = max(0, self._gas_streak - 1)
-            self._brake_streak = max(0, self._brake_streak - 1)
+            self._gas_time = max(0.0, self._gas_time - dt)
+            self._brake_time = max(0.0, self._brake_time - dt)
 
-        throttle = 1.0 if self._gas_streak >= self.PEDAL_CONFIRM else 0.0
-        brake = 1.0 if self._brake_streak >= self.PEDAL_CONFIRM else 0.0
+        throttle = 1.0 if self._gas_time >= self.PEDAL_CONFIRM_SECONDS else 0.0
+        brake = 1.0 if self._brake_time >= self.PEDAL_CONFIRM_SECONDS else 0.0
         if brake > 0.0:
             throttle = 0.0
         return throttle, brake
@@ -237,15 +225,11 @@ class GestureDriver:
         ordered = sorted(hands, key=lambda h: h.landmarks[WRIST][0])
         return ordered[0], ordered[-1]
 
-    def _decay_pedals(self) -> None:
-        self._smooth_throttle = self._lerp(self._smooth_throttle, 0.0, 0.5)
-        self._smooth_brake = self._lerp(self._smooth_brake, 0.0, 0.5)
-        self._gas_streak = 0
-        self._brake_streak = 0
-
-    @staticmethod
-    def _lerp(current: float, target: float, alpha: float) -> float:
-        return current * (1.0 - alpha) + target * alpha
+    def _decay_pedals(self, dt: float) -> None:
+        self._smooth_throttle = lerp(self._smooth_throttle, 0.0, 0.5, dt)
+        self._smooth_brake = lerp(self._smooth_brake, 0.0, 0.5, dt)
+        self._gas_time = 0.0
+        self._brake_time = 0.0
 
     @staticmethod
     def _steer_text(steer: float) -> str:
