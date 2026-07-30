@@ -1,60 +1,91 @@
 # Gesture Car Control
 
-A real-time computer vision system that translates webcam hand gestures into keyboard controls for browser-based car games.
+Real-time, touch-free control for browser driving games using computer vision.
 
-This project demonstrates end-to-end applied ML engineering: perception (hand landmarks), gesture classification, temporal filtering, control mapping, and live system feedback.
+Gesture Car Control converts webcam hand movements into progressive steering,
+acceleration, and braking. It combines MediaPipe hand landmarks, custom
+geometric gesture classification, frame-rate-independent filtering, simulated
+keyboard input, and a recording-friendly browser picture-in-picture overlay.
 
----
-
-## Project Overview
-
-`Gesture Car Control` lets a user steer, accelerate, and brake in online car games without touching a keyboard.
-
-The system runs locally and performs this pipeline each frame:
-
-1. Capture webcam frame
-2. Detect and track hand landmarks with MediaPipe
-3. Classify palm state (`OPEN`, `CLOSED`, `NEUTRAL`)
-4. Smooth steering and debounce pedal actions
-5. Emit keyboard events (arrow keys or WASD) to the focused game window
+The application runs entirely on the local machine. No camera frames or
+landmark data are uploaded.
 
 ---
 
-## Why This Project Matters
+## Project at a Glance
 
-- **Human-computer interaction**: turns natural gestures into game input
-- **Real-time systems**: balances responsiveness and stability
-- **Applied AI**: integrates model inference with robust post-processing
-- **Production thinking**: includes confidence thresholds, hysteresis, debouncing, and visual diagnostics
+- Tracks up to **two hands and 42 landmarks** in real time.
+- Reached **26.7 FPS end-to-end** on the development machine against a
+  30 FPS webcam hardware limit.
+- Supports two-hand virtual-wheel and one-hand pointer control modes.
+- Converts analog hand tilt into progressive digital steering using key
+  duty cycling.
+- Classifies open, closed, and neutral palms independently of hand scale and
+  image-plane rotation.
+- Displays a borderless **480x270 always-on-top PiP** over the browser for
+  gameplay recording.
+- Supports both arrow-key and WASD browser games.
 
-This is a strong portfolio project for roles in:
-- Computer vision engineering
-- ML/product engineering
-- Interactive systems and game tooling
-- Robotics/controls-adjacent software
+Recommended demonstration game:
+**[Slow Roads](https://slowroads.io)**.
 
 ---
 
-## Key Features
+## The Problem
 
-- Dual control modes:
-  - **Wheel mode** (two hands): steering wheel metaphor
-  - **Pointer mode** (single hand): fallback for constrained camera setups
-- Palm-state based pedals:
-  - **Both palms closed** -> full speed
-  - **Both palms open** -> brake
-- Robust gesture detection:
-  - Scale-invariant palm openness metrics
-  - State hysteresis (different enter/exit thresholds)
-  - Multi-frame confirmation before pedal activation
-- Smooth steering stack:
-  - Angle-domain smoothing
-  - Rate-limited output
-  - Keyboard hysteresis to avoid rapid left/right key flapping
-- Live visual overlay:
-  - Hand skeletons
-  - Per-hand palm labels
-  - Mode/status/HUD telemetry
+Browser games normally accept binary keyboard input: a steering key is either
+pressed or released. Hand motion is continuous, noisy, and affected by camera
+frame rate, lighting, temporary detection loss, and natural tremor.
+
+A direct mapping from hand position to keys therefore produces:
+
+- accidental turns near the center position;
+- full-lock steering from small movements;
+- rapid key flicker;
+- inconsistent behavior at different frame rates;
+- stale controls when camera capture and model inference block each other.
+
+This project addresses those problems as a real-time controls pipeline rather
+than treating landmark detection alone as the finished solution.
+
+---
+
+## Core Features
+
+### Gesture Controls
+
+**Wheel mode (default)**
+
+- Tilt both hands like a steering wheel to steer.
+- Close both palms to accelerate at full speed.
+- Open both palms to brake.
+- Controls deactivate safely if two reliable hands are unavailable.
+
+**Pointer mode**
+
+- Move one palm horizontally to steer.
+- Close the palm to accelerate.
+- Open the palm to brake.
+
+### Reliability and Control Quality
+
+- Median filtering and exponential smoothing for palm openness.
+- Separate gesture enter/exit thresholds to prevent state flicker.
+- Time-based gesture confirmation rather than FPS-dependent frame counts.
+- Short tracking-loss grace period for isolated missed detections.
+- Steering dead zone, adaptive smoothing, and rate limiting.
+- Key hysteresis around center.
+- Progressive key duty cycling for gentle, medium, and full turns.
+- Explicit arm/pause state to prevent unintended keyboard output.
+
+### Recording-Friendly Browser Overlay
+
+- Borderless 16:9 webcam picture-in-picture.
+- Anchored to the bottom-right desktop work area.
+- Always above a maximized browser window.
+- Hidden from the Windows taskbar.
+- Shows hand skeletons, palm states, current action, and live FPS.
+- Minimal interface designed for screen-recorded demonstrations.
 
 ---
 
@@ -62,81 +93,212 @@ This is a strong portfolio project for roles in:
 
 ```mermaid
 flowchart LR
-    A[CameraStream\nthreaded capture] --> B[HandTracker\nMediaPipe Landmarker]
-    B --> C[Gesture Layer\nPalmAnalyzer]
-    C --> D[Control Layer\nGestureDriver]
-    D --> E[Steering Filter\nSteerSmoother]
-    E --> F[Keyboard Mapping\nKeyboardDriver]
-    F --> G[Focused Browser Game]
-    D --> H[Overlay Renderer]
-    B --> H
+    Camera[Webcam]
+
+    subgraph Capture["Capture thread"]
+        Stream[CameraStream]
+        Latest[Newest-frame buffer]
+        Stream --> Latest
+    end
+
+    subgraph Realtime["Real-time processing loop"]
+        Tracker[HandTracker<br/>MediaPipe Tasks]
+        Gestures[PalmAnalyzer<br/>OPEN / CLOSED / NEUTRAL]
+        Driver[GestureDriver<br/>control policy]
+        Steering[SteerSmoother<br/>deadzone + adaptive filter]
+        Keyboard[KeyboardDriver<br/>hysteresis + duty cycle]
+        Render[Overlay renderer]
+    end
+
+    Browser[Focused browser game]
+    PiP[Topmost 480x270 PiP]
+
+    Camera --> Stream
+    Latest --> Tracker
+    Tracker --> Gestures
+    Tracker --> Driver
+    Gestures --> Driver
+    Driver --> Steering
+    Steering --> Keyboard
+    Keyboard --> Browser
+    Tracker --> Render
+    Driver --> Render
+    Render --> PiP
 ```
 
-### Layer Responsibilities
+### Data Flow per Processed Frame
 
-- **Perception (`gesture_car/tracker.py`)**
-  - Runs MediaPipe hand-landmarker inference
-  - Applies landmark smoothing
-  - Outputs normalized 21-point hand landmarks + handedness + confidence
+1. `CameraStream` captures continuously on a background thread.
+2. The processing loop requests only the newest available frame.
+3. `HandTracker` runs MediaPipe inference and smooths 21 landmarks per hand.
+4. `PalmAnalyzer` derives a stable palm state from landmark geometry.
+5. `GestureDriver` computes normalized steering, throttle, and brake values.
+6. `SteerSmoother` filters steering using the measured frame delta.
+7. `KeyboardDriver` emits arrow or WASD events to the focused game.
+8. The annotated camera frame is rendered in the topmost PiP window.
 
-- **Gesture classification (`gesture_car/gestures.py`)**
-  - Computes palm openness from geometric ratios and finger spread
-  - Uses confidence-aware temporal memory
-  - Produces stable `OPEN` / `CLOSED` / `NEUTRAL` states
-
-- **Control logic (`gesture_car/driver.py`)**
-  - Maps hands to steering and pedals
-  - Supports wheel and pointer modes
-  - Debounces acceleration/brake transitions
-
-- **Steering dynamics (`gesture_car/steer.py`)**
-  - Smooths noisy angle updates
-  - Enforces deadzone and per-frame rate limiting
-
-- **Actuation (`gesture_car/keyboard_out.py`)**
-  - Maps control outputs to `Arrow` or `WASD`
-  - Applies key hysteresis near center to reduce jitter
-
-- **Presentation (`gesture_car/overlay.py`, `gesture_car/ui.py`)**
-  - Draws skeletons, labels, steering wheel, pedal bars, and status
+The newest-frame design intentionally drops stale camera frames. For
+interactive control, low input age is more important than processing every
+captured frame.
 
 ---
 
-## Control Design
+## Technical Design
 
-### Wheel Mode (default)
+### 1. Hand Tracking
 
-- Steering: computed from angle between left and right palm centers
-- Full speed: both palms detected as `CLOSED`
-- Brake: both palms detected as `OPEN`
+`gesture_car/tracker.py` wraps the MediaPipe Hand Landmarker Tasks API.
 
-### Pointer Mode (fallback)
+- Video inference mode with tracking between frames.
+- Up to two detected hands.
+- 640-pixel inference input for the best measured latency/throughput balance.
+- Normalized landmarks remain independent of display resolution.
+- Adaptive landmark EMA: deliberate movements receive a faster blend than
+  small jitter.
 
-- Steering: one-hand palm center horizontal displacement
-- Full speed: `CLOSED`
-- Brake: `OPEN`
+The camera remains at 1280x720 for a clean recording overlay while inference
+uses a smaller copy.
 
-### Steering Feel
+### 2. Palm Classification
 
-Steering is intentionally progressive rather than on/off:
+`gesture_car/gestures.py` does not rely on screen-axis comparisons such as
+"tip Y is above knuckle Y," which fail when a hand rotates.
 
-| Hand tilt | Result |
-|-----------|--------|
-| under 15° | no input (jitter immunity) |
-| 20° | gentle turn (~50% pulsed key) |
-| 30° | strong turn (~85%) |
-| 40°+ | full lock (key held) |
+For each non-thumb finger it computes:
 
-Because browser games only accept digital key presses, partial turns are
-produced by pulsing the steer key at a duty cycle proportional to hand tilt.
-This removes the oversteer that comes from holding a key down continuously.
+```text
+extension ratio = distance(fingertip, wrist) / distance(PIP joint, wrist)
+```
 
-### Stability Mechanisms
+Ratios are normalized between measured curled and straight reference values.
+The mean of the four finger scores becomes the raw palm-openness value.
 
-- Hand confidence filtering (`MIN_HAND_SCORE`)
-- Gesture hysteresis (separate enter/exit boundaries)
-- Frame streak confirmation before pedal activation
-- Smoothed steering output + keyboard enter/exit thresholds
+This representation is:
+
+- scale invariant;
+- translation invariant;
+- resistant to image-plane hand rotation;
+- simple enough for real-time CPU execution.
+
+The raw value then passes through:
+
+1. a five-sample median filter;
+2. a frame-delta-adjusted EMA;
+3. separate open/closed enter and exit thresholds;
+4. a 70 ms state confirmation period.
+
+Expected settled scores from the included synthetic checks:
+
+- open palm: approximately `0.93`;
+- relaxed hand: approximately `0.52`;
+- closed fist: approximately `0.00`.
+
+### 3. Steering Model
+
+In wheel mode, steering is derived from the angle between left and right palm
+centers:
+
+```text
+angle = atan2(rightPalm.y - leftPalm.y, rightPalm.x - leftPalm.x)
+```
+
+The steering pipeline applies:
+
+- a 16% center dead zone;
+- circular angle smoothing using sine/cosine components;
+- adaptive output smoothing;
+- a maximum steering change of 2.1 normalized units per second;
+- adjustable user sensitivity.
+
+Default response:
+
+| Hand tilt | Output behavior |
+|-----------|-----------------|
+| Below 15 degrees | No steering input |
+| 20 degrees | Gentle turn, approximately 50% key duty |
+| 30 degrees | Strong turn, approximately 85% key duty |
+| 40 degrees or more | Full lock, key held |
+
+### 4. Progressive Digital Steering
+
+Browser games expose digital keys, not an analog steering API. Holding a key
+for every non-zero hand angle would make small turns behave like full lock.
+
+`gesture_car/keyboard_out.py` solves this by pulsing the selected steering key
+within a 160 ms period. Pulse duty increases with steering magnitude:
+
+- light tilt: key active during part of each period;
+- strong tilt: longer active portion;
+- full tilt: continuously held.
+
+Direction hysteresis uses separate activation and release thresholds, which
+prevents rapid left/right transitions around center.
+
+### 5. Frame-Rate-Independent Filters
+
+Per-frame constants change behavior when FPS changes. A filter tuned at
+15 FPS becomes roughly twice as aggressive at 30 FPS.
+
+`gesture_car/filters.py` converts reference 30 FPS smoothing constants using:
+
+```text
+adjustedAlpha = 1 - (1 - referenceAlpha) ** (deltaTime / referenceDelta)
+```
+
+As a result, gesture confirmation, tracking grace periods, steering response,
+and pedal smoothing are expressed in seconds rather than frame counts.
+
+Measured time to reach 90% steering at a 30-degree tilt:
+
+| Processing rate | Rise time |
+|-----------------|-----------|
+| 15 FPS | 667 ms |
+| 30 FPS | 700 ms |
+| 60 FPS | 700 ms |
+
+### 6. Concurrent Capture
+
+Camera capture and ML inference are independent blocking operations.
+Executing them sequentially adds their latency.
+
+`gesture_car/camera.py` moves capture to a daemon thread and stores only the
+newest frame behind a lock. Inference and capture can therefore overlap, while
+the controller avoids building a queue of old frames.
+
+### 7. Native Picture-in-Picture
+
+`gesture_car/window.py` combines OpenCV rendering with Win32 APIs through
+`ctypes`.
+
+It:
+
+- removes caption, resize frame, and system-menu styles;
+- applies the tool-window style so no taskbar icon is created;
+- places the exact 480x270 client window within the Windows work area;
+- sets the window to topmost without activating it during repositioning.
+
+A non-Windows fallback uses OpenCV's window APIs.
+
+---
+
+## Measured Performance
+
+Benchmarks were collected on the development machine using:
+
+```bash
+python tools/bench.py
+```
+
+| Stage | Measured result |
+|-------|-----------------|
+| Threaded 1280x720 capture | 30.0 FPS |
+| Inference at 960 px | 57.7 ms |
+| Inference at 640 px | 24.2 ms |
+| Full loop at 960 px | 22.5 FPS |
+| Full loop at 640 px | **26.7 FPS** |
+
+The optimized loop operates close to the webcam's 30 FPS hardware ceiling.
+Results vary by camera, CPU, lighting, visible hands, and MediaPipe version.
 
 ---
 
@@ -144,183 +306,244 @@ This removes the oversteer that comes from holding a key down continuously.
 
 ```text
 GesterControlledCarGame/
-├── main.py                     # CLI entrypoint
-├── download_model.py           # Downloads MediaPipe hand model
+├── main.py                       # Application entry point
+├── download_model.py             # MediaPipe model downloader
 ├── requirements.txt
 ├── README.md
-└── gesture_car/
-    ├── __init__.py
-    ├── app.py                  # Main realtime loop and key handlers
-    ├── camera.py               # Threaded capture, newest-frame-wins
-    ├── filters.py              # Frame-rate independent smoothing
-    ├── window.py               # Borderless topmost browser PiP
-    ├── tracker.py              # Hand detection + landmark smoothing
-    ├── gestures.py             # Palm state classifier
-    ├── driver.py               # Gesture-to-control policy
-    ├── steer.py                # Steering smoother/filter
-    ├── keyboard_out.py         # Keyboard output (arrows/WASD)
-    ├── overlay.py              # Visual debug/HUD rendering
-    ├── ui.py                   # Drawing primitives/colors
-    └── models/
-        └── hand_landmarker.task
+├── gesture_car/
+│   ├── app.py                    # Real-time orchestration loop
+│   ├── camera.py                 # Threaded newest-frame capture
+│   ├── tracker.py                # MediaPipe inference and landmark smoothing
+│   ├── gestures.py               # Palm openness and temporal state machine
+│   ├── driver.py                 # Gesture-to-vehicle control policy
+│   ├── steer.py                  # Frame-rate-independent steering filter
+│   ├── filters.py                # Time-domain EMA utilities
+│   ├── keyboard_out.py           # Arrow/WASD actuation and duty cycling
+│   ├── overlay.py                # Skeleton and compact HUD rendering
+│   ├── ui.py                     # Shared drawing primitives
+│   ├── window.py                 # Native borderless topmost PiP
+│   └── models/
+│       └── hand_landmarker.task
+└── tools/
+    ├── bench.py                  # Capture, inference, and full-loop benchmark
+    ├── check_gestures.py         # Synthetic gesture invariance checks
+    └── check_steering.py         # Steering curve and FPS-independence checks
 ```
 
-Tuning and diagnostic utilities:
+---
+
+## Technology Stack
+
+- Python 3.9+
+- MediaPipe Tasks
+- OpenCV
+- NumPy
+- pynput
+- Win32 APIs through Python `ctypes`
+
+---
+
+## Installation
+
+### Prerequisites
+
+- Desktop operating system with a webcam
+- Python 3.9 or newer
+- Modern browser
+- Good, even lighting for reliable hand landmarks
+
+### 1. Create and activate a virtual environment
 
 ```bash
-python tools/check_gestures.py   # fist/open-palm classification (no webcam)
-python tools/check_steering.py   # steering response curve (no webcam)
-python tools/bench.py            # capture/inference/loop FPS (needs webcam)
+python -m venv .venv
 ```
 
----
+Windows:
 
-## Tech Stack
+```bash
+.venv\Scripts\activate
+```
 
-- **Python** 3.9+
-- **MediaPipe Tasks** (hand landmark model)
-- **OpenCV** (camera I/O + rendering)
-- **NumPy** (geometry and filtering math)
-- **pynput** (keyboard event emission)
+macOS/Linux:
 
----
+```bash
+source .venv/bin/activate
+```
 
-## Setup and Run
-
-### 1) Install dependencies
+### 2. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2) Download model
+### 3. Download the hand model
 
 ```bash
 python download_model.py
 ```
 
-### 3) Launch app
+### 4. Run
 
 ```bash
 python main.py
 ```
 
-### Recommended Game
-
-Use **[Slow Roads](https://slowroads.io)**. Its forgiving endless-driving
-format and native arrow/WASD controls make it the best match for this
-gesture controller. Press `G` inside the app to open it, press `TAB` to arm
-the controller, then click the game window.
-
-### Browser Picture-in-Picture and Recording
-
-The camera opens as a borderless 480x270 picture-in-picture window in the
-bottom-right corner. It stays above a maximized browser and includes:
-
-- mirrored webcam video
-- tracked hand skeletons and palm-state labels
-- current steering/pedal action
-- live FPS
-
-Recommended recording workflow:
-
-1. Start the app with `python main.py`.
-2. Click the camera overlay and press `TAB` to arm controls.
-3. Press `G` to open Slow Roads.
-4. Maximize the browser and start driving.
-5. Record using **Display Capture / Screen Capture** so both the browser and
-   the separate PiP window are included. Browser-only "Window Capture" may
-   omit the overlay.
-
 ---
 
-## Runtime Controls
+## Usage
+
+Recommended workflow:
+
+1. Start the application.
+2. Click the camera PiP and press `TAB` to arm keyboard output.
+3. Press `G` to open Slow Roads.
+4. Maximize the browser and click the game.
+5. Hold both hands clearly in the camera frame.
+6. Tilt to steer, close both palms to accelerate, and open both to brake.
+
+For recording, use **Display Capture / Screen Capture** so the browser and
+the separate topmost PiP are both included. Browser-only Window Capture may
+omit the PiP.
+
+### Runtime Keys
 
 | Key | Action |
 |-----|--------|
-| `TAB` | Arm/pause keyboard output |
-| `M` | Toggle `WHEEL` / `POINTER` mode |
-| `K` | Toggle `ARROWS` / `WASD` mapping |
-| `G` | Open Slow Roads in the default browser |
-| `[` / `]` | Decrease / increase steering sensitivity |
-| `H` | Show/hide help overlay |
-| `Q` or `ESC` | Quit |
+| `TAB` | Arm or pause keyboard output |
+| `M` | Switch wheel/pointer mode |
+| `K` | Switch arrow/WASD mapping |
+| `G` | Open Slow Roads |
+| `[` / `]` | Decrease/increase steering sensitivity |
+| `H` | Show/hide help |
+| `Q` / `ESC` | Exit |
 
 ---
 
-## Performance
+## Verification and Diagnostics
 
-Capture and inference each cost roughly 25–34 ms. Running them sequentially
-halved the frame rate, so capture happens on a background thread and always
-serves the newest frame, dropping stale ones to keep latency low.
+The project includes deterministic checks for the custom control logic:
 
-Measured on this machine with `python tools/bench.py`:
+```bash
+python tools/check_gestures.py
+python tools/check_steering.py
+python tools/bench.py
+python -m compileall -q gesture_car tools main.py
+```
 
-| Stage | Result |
-|-------|--------|
-| Threaded capture | 30 fps at 1280x720 (camera hardware limit) |
-| Inference at 960 px | 57.7 ms |
-| Inference at 640 px | 24.2 ms |
-| Full loop at 960 px | 22.5 fps |
-| Full loop at 640 px | **26.7 fps** |
+`check_gestures.py` verifies:
 
-Two findings drove the tuning:
+- open/closed/neutral separation;
+- rotation invariance;
+- scale invariance;
+- consistent classification at 15, 30, and 60 FPS.
 
-- MediaPipe rescales input to a fixed model size internally, so feeding it
-  640 px instead of 960 px cuts inference time by more than half with no loss
-  of landmark quality.
-- The webcam caps at 30 fps, which is now the limiting factor rather than the
-  pipeline.
+`check_steering.py` verifies:
 
-All smoothing constants are expressed against a 30 fps reference and rescaled
-by the measured frame delta (`gesture_car/filters.py`), so the control feel is
-identical at 15, 30, or 60 fps instead of getting twitchier as FPS rises.
-
-## Reliability Notes
-
-- Input is filtered at multiple stages to reduce false triggers.
-- Steering uses smoothing + hysteresis to maintain directional stability around center.
-- The app sends keys only when controls are armed, reducing accidental input.
-- Accuracy is sensitive to:
-  - lighting quality
-  - hand visibility in frame
-  - camera placement and field of view
+- dead-zone behavior;
+- progressive steering output;
+- key duty-cycle progression;
+- recentering;
+- consistent response time at different FPS.
 
 ---
 
-## Engineering Trade-offs
+## Engineering Decisions and Trade-offs
 
-- **Responsiveness vs stability**: stronger smoothing improves control stability but increases latency.
-- **Binary pedals vs analog throttle**: binary full-speed/brake is simpler and more robust for browser games.
-- **Model confidence thresholding**: stricter thresholds reduce false positives but can drop detections in poor lighting.
+### Binary pedals
+
+Throttle and brake are intentionally binary because browser games generally
+expose keyboard controls. Binary palm poses are also easier to distinguish
+reliably than a continuous throttle gesture.
+
+### Responsiveness versus stability
+
+Filtering removes jitter but adds latency. The selected defaults prioritize
+predictable recorded gameplay, while runtime sensitivity controls allow users
+to adjust steering strength.
+
+### Dropping frames
+
+The capture thread intentionally overwrites frames that inference has not
+consumed. Processing every frame would preserve throughput statistics but
+increase control latency, which is the wrong trade-off for an interactive
+system.
+
+### CPU inference
+
+The application uses MediaPipe's CPU/XNNPACK path for broad compatibility.
+The inference width was selected from measured results rather than assumed
+from image dimensions.
 
 ---
 
-## Future Improvements
+## Current Limitations
 
-- Per-user calibration flow (camera angle, gesture threshold tuning)
-- Optional analog acceleration (gesture intensity -> throttle magnitude)
-- Game profiles (different key layouts and sensitivity presets)
-- Telemetry logging and replay tools for tuning
-- Packaging as a desktop app with one-click start
+- Keyboard simulation works only with games that accept arrow keys or WASD.
+- The PiP is a separate desktop window; browser-only recording modes may not
+  capture it.
+- Hand landmark quality depends on lighting, visibility, and camera angle.
+- Binary key output cannot match a native analog gamepad's precision.
+- The native borderless PiP implementation is optimized for Windows.
 
 ---
 
-## Recruiter Notes / Resume Highlights
+## Future Development
 
-Potential resume bullets based on this project:
+- Guided per-user gesture calibration.
+- Game-specific sensitivity and key profiles.
+- Optional virtual gamepad output for true analog steering.
+- Persistent configuration file.
+- Automated tests using recorded landmark sequences.
+- Latency telemetry separating capture, inference, render, and actuation.
+- Packaged desktop executable with one-click model setup.
 
-- Built a real-time computer vision input system that maps hand gestures to keyboard controls for online car games using MediaPipe and OpenCV.
-- Designed a multi-stage control pipeline with gesture hysteresis, confidence gating, and steering filters to reduce false triggers and directional jitter.
-- Implemented dual interaction modes and live diagnostics overlays to improve robustness, usability, and debugging in production-like runtime conditions.
+---
+
+## Portfolio / Resume Highlights
+
+- Built a real-time computer-vision controller that maps 42 MediaPipe hand
+  landmarks to browser-game steering, acceleration, and braking.
+- Increased measured end-to-end throughput to 26.7 FPS by overlapping webcam
+  capture with inference and selecting an empirically benchmarked input size.
+- Designed scale- and rotation-invariant palm classification with median
+  filtering, hysteresis, and time-based gesture confirmation.
+- Converted continuous hand tilt into progressive digital steering through
+  adaptive filtering, direction hysteresis, and key duty cycling.
+- Implemented a native borderless Win32 PiP overlay for polished gameplay
+  demonstrations and screen recording.
+- Added deterministic gesture, steering, frame-rate-independence, and
+  performance diagnostic tools.
 
 ---
 
 ## Troubleshooting
 
-| Problem | Fix |
-|---------|-----|
-| Model missing error | Run `python download_model.py` |
-| Game not responding | Press `TAB` to arm, then click game window |
-| Wrong input mapping | Press `K` to switch arrows/WASD |
-| Unstable detection | Improve lighting and keep hands fully visible |
+### The game does not respond
+
+- Click the camera PiP and press `TAB`.
+- Click the browser game so it receives simulated keys.
+- Press `K` if the game expects WASD instead of arrow keys.
+
+### Hands are missing or unstable
+
+- Keep both hands fully visible.
+- Use even front lighting.
+- Avoid a bright window directly behind you.
+- Keep hands separated enough for MediaPipe to distinguish them.
+
+### Steering is too strong or weak
+
+- Click the PiP.
+- Press `[` to reduce sensitivity or `]` to increase it.
+
+### The PiP is missing from a recording
+
+Use Display Capture or Screen Capture. A browser-only Window Capture source
+may capture only the browser's native surface and omit separate topmost
+windows.
+
+### The model is missing
+
+```bash
+python download_model.py
+```
