@@ -179,6 +179,13 @@ python download_model.py
 python main.py
 ```
 
+### Recommended Game
+
+Use **[Slow Roads](https://slowroads.io)**. Its forgiving endless-driving
+format and native arrow/WASD controls make it the best match for this
+gesture controller. Press `G` inside the app to open it, press `TAB` to arm
+the controller, then click the game window.
+
 ---
 
 ## Runtime Controls
@@ -188,6 +195,7 @@ python main.py
 | `TAB` | Arm/pause keyboard output |
 | `M` | Toggle `WHEEL` / `POINTER` mode |
 | `K` | Toggle `ARROWS` / `WASD` mapping |
+| `G` | Open Slow Roads in the default browser |
 | `H` | Show/hide help overlay |
 | `Q` or `ESC` | Quit |
 

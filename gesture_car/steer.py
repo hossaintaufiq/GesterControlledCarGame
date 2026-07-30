@@ -10,11 +10,12 @@ from dataclasses import dataclass
 class SteerSmoother:
     """Two-stage steer smoothing with circular angle handling."""
 
-    output_alpha: float = 0.16
-    angle_alpha: float = 0.18
-    pointer_alpha: float = 0.20
-    deadzone: float = 0.09
-    max_rate: float = 0.12  # max change per frame
+    output_alpha: float = 0.13
+    fast_alpha: float = 0.34
+    angle_alpha: float = 0.22
+    pointer_alpha: float = 0.24
+    deadzone: float = 0.08
+    max_rate: float = 0.09
 
     _output: float = 0.0
     _sin_v: float = 0.0
@@ -54,9 +55,14 @@ class SteerSmoother:
     def _push_output(self, target: float) -> float:
         target = self._apply_deadzone(target)
         delta = target - self._output
-        if abs(delta) > self.max_rate:
-            target = self._output + math.copysign(self.max_rate, delta)
-        self._output = self._lerp(self._output, target, self.output_alpha)
+        # Suppress small landmark jitter while following deliberate turns quickly.
+        movement = min(1.0, abs(delta) / 0.45)
+        alpha = self.output_alpha + (self.fast_alpha - self.output_alpha) * movement
+        next_output = self._lerp(self._output, target, alpha)
+        step = next_output - self._output
+        if abs(step) > self.max_rate:
+            next_output = self._output + math.copysign(self.max_rate, step)
+        self._output = next_output
         return self._output
 
     def _apply_deadzone(self, value: float) -> float:

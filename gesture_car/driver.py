@@ -38,8 +38,9 @@ class CarControlState:
 class GestureDriver:
     STEER_GAIN = 1.85
     WHEEL_MAX_ANGLE = 0.48
-    MIN_HAND_SCORE = 0.62
+    MIN_HAND_SCORE = 0.50
     PEDAL_CONFIRM = 3
+    TRACKING_GRACE_FRAMES = 3
 
     def __init__(self) -> None:
         self.mode = ControlMode.WHEEL
@@ -49,6 +50,8 @@ class GestureDriver:
         self._smooth_brake = 0.0
         self._gas_streak = 0
         self._brake_streak = 0
+        self._last_reliable: list[HandResult] = []
+        self._tracking_misses = 0
 
     def set_mode(self, mode: ControlMode) -> None:
         self.mode = mode
@@ -59,6 +62,18 @@ class GestureDriver:
 
     def update(self, hands: list[HandResult], *, enabled: bool) -> CarControlState:
         reliable = [h for h in hands if h.score >= self.MIN_HAND_SCORE]
+        required = 2 if self.mode == ControlMode.WHEEL else 1
+
+        if enabled and len(reliable) >= required:
+            self._last_reliable = reliable
+            self._tracking_misses = 0
+        elif enabled and self._last_reliable:
+            self._tracking_misses += 1
+            if self._tracking_misses <= self.TRACKING_GRACE_FRAMES:
+                reliable = self._last_reliable
+        else:
+            self._last_reliable = []
+            self._tracking_misses = 0
 
         if not enabled or not reliable:
             smooth_steer = self.steer.decay()
@@ -69,7 +84,15 @@ class GestureDriver:
                 active=False,
             )
 
-        if self.mode == ControlMode.WHEEL and len(reliable) >= 2:
+        if self.mode == ControlMode.WHEEL:
+            if len(reliable) < 2:
+                smooth_steer = self.steer.decay()
+                self._decay_pedals()
+                return self._state(
+                    smooth_steer,
+                    len(hands),
+                    active=False,
+                )
             raw = self._wheel_controls(reliable)
         else:
             raw = self._pointer_controls(reliable[0])

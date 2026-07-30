@@ -7,7 +7,7 @@ import math
 import cv2
 import numpy as np
 
-from gesture_car.driver import CarControlState, ControlMode
+from gesture_car.driver import CarControlState
 from gesture_car import ui
 from gesture_car.tracker import HandResult
 
@@ -89,41 +89,24 @@ def draw_hud(
     state: CarControlState,
     *,
     enabled: bool,
-    keys: set[str],
-    fps: float,
-    scheme: str,
 ) -> None:
     h, w = frame.shape[:2]
-    ui.panel(frame, 0, 0, w, 108, alpha=0.72)
+    ui.panel(frame, 0, 0, w, 52, alpha=0.72)
 
     status = "LIVE" if enabled else "PAUSED"
     status_color = ui.SUCCESS if enabled else ui.WARN
-    ui.put_text(frame, "GESTURE CAR", (18, 30), scale=0.7, color=ui.ACCENT, weight=2)
-    ui.put_text(frame, status, (220, 30), scale=0.62, color=status_color, weight=2)
+    ui.put_text(frame, "GESTURE DRIVE", (16, 33), scale=0.65, color=ui.ACCENT, weight=2)
+    ui.put_text(frame, status, (205, 33), scale=0.52, color=status_color, weight=2)
 
-    mode = "WHEEL" if state.mode == ControlMode.WHEEL else "POINTER"
-    ui.put_text(frame, f"Mode {mode}  |  Keys {scheme}  |  FPS {fps:.0f}", (18, 58), scale=0.45, color=ui.MUTED)
-    ui.put_text(
-        frame,
-        f"Steer {state.steer_label}  |  {state.pedal_label}  |  Hands {state.hands_visible}",
-        (18, 78),
-        scale=0.45,
-        color=ui.TEXT,
-    )
-    ui.put_text(
-        frame,
-        f"L: {state.left_palm}   R: {state.right_palm}   (green=closed  red=open)",
-        (18, 98),
-        scale=0.42,
-        color=ui.MUTED,
-    )
+    action_color = ui.DANGER if state.pedal_label == "BRAKE" else ui.SUCCESS
+    action = f"{state.steer_label}  |  {state.pedal_label}"
+    ui.put_text(frame, action, (w // 2 - 75, 33), scale=0.55, color=action_color, weight=2)
 
-    if keys:
-        labels = " ".join(k.upper() for k in sorted(keys))
-        ui.put_text(frame, f"Sending: {labels}", (w - 260, 30), scale=0.5, color=ui.SUCCESS)
+    palms = f"L {state.left_palm}  R {state.right_palm}"
+    ui.put_text(frame, palms, (w - 235, 33), scale=0.45, color=ui.MUTED)
 
     if not enabled:
-        ui.put_text(frame, "Press TAB to arm controls", (w // 2 - 150, h // 2), scale=0.7, color=ui.WARN, weight=2)
+        ui.put_text(frame, "TAB TO START", (w // 2 - 90, h // 2), scale=0.7, color=ui.WARN, weight=2)
 
 
 def draw_help(frame: np.ndarray, lines: list[str]) -> None:

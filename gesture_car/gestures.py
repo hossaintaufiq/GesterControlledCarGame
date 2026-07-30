@@ -52,9 +52,10 @@ class PalmReading:
 @dataclass
 class _HandMemory:
     state: PalmState = PalmState.NEUTRAL
-    closed_streak: int = 0
-    open_streak: int = 0
+    pending: PalmState = PalmState.NEUTRAL
+    pending_frames: int = 0
     openness_ema: float = 0.5
+    samples: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -66,8 +67,8 @@ class PalmAnalyzer:
     closed_exit: float = 0.40
     open_enter: float = 0.72
     open_exit: float = 0.60
-    confirm_frames: int = 4
-    openness_smooth: float = 0.35
+    confirm_frames: int = 3
+    openness_smooth: float = 0.42
     _memory: dict[str, _HandMemory] = field(default_factory=dict)
 
     def analyze(self, hand: HandResult) -> PalmReading:
@@ -83,57 +84,37 @@ class PalmAnalyzer:
             )
 
         raw_open = self._measure_openness(hand.landmarks)
-        mem.openness_ema = self._lerp(mem.openness_ema, raw_open, self.openness_smooth)
+        mem.samples.append(raw_open)
+        if len(mem.samples) > 5:
+            mem.samples.pop(0)
+        median_open = float(np.median(mem.samples))
+        mem.openness_ema = self._lerp(
+            mem.openness_ema, median_open, self.openness_smooth,
+        )
         openness = mem.openness_ema
 
-        if mem.state == PalmState.CLOSED:
-            if openness >= self.closed_exit:
-                mem.closed_streak = 0
-                if openness >= self.open_enter:
-                    mem.open_streak += 1
-                    if mem.open_streak >= self.confirm_frames:
-                        mem.state = PalmState.OPEN
-                        mem.open_streak = 0
-                else:
-                    mem.open_streak = 0
-                    if openness <= self.closed_enter:
-                        mem.state = PalmState.NEUTRAL
-            else:
-                mem.closed_streak += 1
-                mem.open_streak = 0
-
-        elif mem.state == PalmState.OPEN:
-            if openness <= self.open_exit:
-                mem.open_streak = 0
-                if openness <= self.closed_enter:
-                    mem.closed_streak += 1
-                    if mem.closed_streak >= self.confirm_frames:
-                        mem.state = PalmState.CLOSED
-                        mem.closed_streak = 0
-                else:
-                    mem.closed_streak = 0
-                    if openness >= self.open_enter:
-                        mem.state = PalmState.NEUTRAL
-            else:
-                mem.open_streak += 1
-                mem.closed_streak = 0
-
+        if mem.state == PalmState.CLOSED and openness < self.closed_exit:
+            candidate = PalmState.CLOSED
+        elif mem.state == PalmState.OPEN and openness > self.open_exit:
+            candidate = PalmState.OPEN
+        elif openness <= self.closed_enter:
+            candidate = PalmState.CLOSED
+        elif openness >= self.open_enter:
+            candidate = PalmState.OPEN
         else:
-            if openness <= self.closed_enter:
-                mem.closed_streak += 1
-                mem.open_streak = 0
-                if mem.closed_streak >= self.confirm_frames:
-                    mem.state = PalmState.CLOSED
-                    mem.closed_streak = 0
-            elif openness >= self.open_enter:
-                mem.open_streak += 1
-                mem.closed_streak = 0
-                if mem.open_streak >= self.confirm_frames:
-                    mem.state = PalmState.OPEN
-                    mem.open_streak = 0
-            else:
-                mem.closed_streak = max(0, mem.closed_streak - 1)
-                mem.open_streak = max(0, mem.open_streak - 1)
+            candidate = PalmState.NEUTRAL
+
+        if candidate == mem.state:
+            mem.pending = candidate
+            mem.pending_frames = 0
+        elif candidate == mem.pending:
+            mem.pending_frames += 1
+            if mem.pending_frames >= self.confirm_frames:
+                mem.state = candidate
+                mem.pending_frames = 0
+        else:
+            mem.pending = candidate
+            mem.pending_frames = 1
 
         return PalmReading(
             state=mem.state,
@@ -147,28 +128,40 @@ class PalmAnalyzer:
 
     @staticmethod
     def _measure_openness(lms: np.ndarray) -> float:
-        """0 = fully closed fist, 1 = fully open spread palm."""
+        """Orientation- and scale-resistant palm openness score."""
         palm_size = float(np.linalg.norm(lms[MIDDLE_MCP][:2] - lms[WRIST][:2]))
         palm_size = max(palm_size, 0.04)
+        palm_center = np.mean(
+            lms[[WRIST, INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP], :2],
+            axis=0,
+        )
 
         extensions: list[float] = []
-        for tip, pip, mcp in FINGERS:
-            tip_dist = float(np.linalg.norm(lms[tip][:2] - lms[WRIST][:2]))
-            mcp_dist = float(np.linalg.norm(lms[mcp][:2] - lms[WRIST][:2]))
-            pip_dist = float(np.linalg.norm(lms[pip][:2] - lms[WRIST][:2]))
+        for tip, pip, mcp in FINGERS[1:]:
+            lower = lms[pip][:2] - lms[mcp][:2]
+            upper = lms[tip][:2] - lms[pip][:2]
+            denom = max(float(np.linalg.norm(lower) * np.linalg.norm(upper)), 1e-6)
+            straightness = float(np.dot(lower, upper) / denom)
+            straight_score = float(np.clip((straightness + 0.15) / 1.05, 0.0, 1.0))
 
-            ratio = tip_dist / max(mcp_dist, 0.02)
-            fold = pip_dist / max(tip_dist, 0.02)
-            ext = float(np.clip((ratio - 0.95) / 0.55, 0.0, 1.0))
-            if fold > 0.92:
-                ext *= 0.35
+            reach = float(np.linalg.norm(lms[tip][:2] - palm_center) / palm_size)
+            reach_score = float(np.clip((reach - 0.72) / 1.05, 0.0, 1.0))
+            ext = straight_score * 0.58 + reach_score * 0.42
             extensions.append(ext)
 
+        thumb_reach = float(
+            np.linalg.norm(lms[THUMB_TIP][:2] - palm_center) / palm_size
+        )
+        thumb_score = float(np.clip((thumb_reach - 0.55) / 0.9, 0.0, 1.0))
         spread = float(np.linalg.norm(lms[INDEX_TIP][:2] - lms[PINKY_TIP][:2]))
         spread_norm = float(np.clip((spread / palm_size - 0.55) / 0.85, 0.0, 1.0))
 
         finger_open = float(np.mean(extensions))
-        return float(np.clip(finger_open * 0.78 + spread_norm * 0.22, 0.0, 1.0))
+        return float(np.clip(
+            finger_open * 0.72 + spread_norm * 0.18 + thumb_score * 0.10,
+            0.0,
+            1.0,
+        ))
 
     @staticmethod
     def _label(state: PalmState) -> str:

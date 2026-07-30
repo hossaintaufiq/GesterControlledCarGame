@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import time
+import webbrowser
 from pathlib import Path
 from typing import Optional
 
 import cv2
-import numpy as np
 
 from gesture_car.driver import ControlMode, GestureDriver
 from gesture_car.keyboard_out import KeyScheme, KeyboardDriver
@@ -17,6 +16,7 @@ from gesture_car.tracker import HandTracker
 
 class GestureCarApp:
     INFER_WIDTH = 960
+    GAME_URL = "https://slowroads.io"
 
     def __init__(self, camera_index: int = 0) -> None:
         root = Path(__file__).resolve().parent
@@ -27,10 +27,7 @@ class GestureCarApp:
         self.camera_index = camera_index
 
         self.enabled = False
-        self.show_help = True
-        self._fps = 0.0
-        self._frames = 0
-        self._fps_t = time.perf_counter()
+        self.show_help = False
 
     def run(self) -> int:
         cap = self._open_camera()
@@ -50,6 +47,7 @@ class GestureCarApp:
         print("  TAB  = arm / pause keyboard output")
         print("  M    = toggle wheel / pointer mode")
         print("  K    = toggle arrow keys / WASD")
+        print("  G    = open Slow Roads")
         print("  H    = help overlay")
         print("  Q    = quit")
         print()
@@ -66,7 +64,7 @@ class GestureCarApp:
                     frame, mirrored=True, infer_max_width=self.INFER_WIDTH,
                 )
                 state = self.driver.update(hands, enabled=self.enabled)
-                keys = self.keyboard.apply(state, enabled=self.enabled)
+                self.keyboard.apply(state, enabled=self.enabled)
 
                 draw_hands(
                     frame,
@@ -82,14 +80,10 @@ class GestureCarApp:
                     frame,
                     state,
                     enabled=self.enabled,
-                    keys=keys,
-                    fps=self._fps,
-                    scheme=self.keyboard.scheme.name,
                 )
                 if self.show_help:
                     draw_help(frame, self._help_lines())
 
-                self._tick_fps()
                 cv2.imshow(win, frame)
 
                 if not self._handle_key(cv2.waitKey(1) & 0xFF):
@@ -137,24 +131,13 @@ class GestureCarApp:
             print("Keys:", scheme.name)
         if key in (ord("h"), ord("H")):
             self.show_help = not self.show_help
+        if key in (ord("g"), ord("G")):
+            webbrowser.open(self.GAME_URL)
         return True
 
     def _help_lines(self) -> list[str]:
         return [
-            "WHEEL mode: both hands, tilt wheel to steer",
-            "  Both palms CLOSED = full speed",
-            "  Both palms OPEN = brake",
-            "  Hold pose ~0.5s to confirm (fewer mistakes)",
-            "POINTER mode: one hand left/right to steer",
-            "  Closed palm = gas | open palm = brake",
-            "TAB arm | click browser game | drive",
-            "M mode | K arrows/WASD | Q quit",
+            "Tilt hands = steer",
+            "Both closed = gas | both open = brake",
+            "TAB start | G game | H hide | Q quit",
         ]
-
-    def _tick_fps(self) -> None:
-        self._frames += 1
-        now = time.perf_counter()
-        if now - self._fps_t >= 1.0:
-            self._fps = self._frames / (now - self._fps_t)
-            self._frames = 0
-            self._fps_t = now
