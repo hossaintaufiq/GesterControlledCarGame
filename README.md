@@ -116,6 +116,21 @@ flowchart LR
 - Full speed: `CLOSED`
 - Brake: `OPEN`
 
+### Steering Feel
+
+Steering is intentionally progressive rather than on/off:
+
+| Hand tilt | Result |
+|-----------|--------|
+| under 15° | no input (jitter immunity) |
+| 20° | gentle turn (~50% pulsed key) |
+| 30° | strong turn (~85%) |
+| 40°+ | full lock (key held) |
+
+Because browser games only accept digital key presses, partial turns are
+produced by pulsing the steer key at a duty cycle proportional to hand tilt.
+This removes the oversteer that comes from holding a key down continuously.
+
 ### Stability Mechanisms
 
 - Hand confidence filtering (`MIN_HAND_SCORE`)
@@ -145,6 +160,13 @@ GesterControlledCarGame/
     ├── ui.py                   # Drawing primitives/colors
     └── models/
         └── hand_landmarker.task
+```
+
+Tuning utilities (no webcam required):
+
+```bash
+python tools/check_gestures.py   # verifies fist/open-palm classification
+python tools/check_steering.py   # prints the steering response curve
 ```
 
 ---
@@ -196,6 +218,7 @@ the controller, then click the game window.
 | `M` | Toggle `WHEEL` / `POINTER` mode |
 | `K` | Toggle `ARROWS` / `WASD` mapping |
 | `G` | Open Slow Roads in the default browser |
+| `[` / `]` | Decrease / increase steering sensitivity |
 | `H` | Show/hide help overlay |
 | `Q` or `ESC` | Quit |
 

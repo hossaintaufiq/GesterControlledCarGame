@@ -26,9 +26,11 @@ def draw_hands(
     hands: list[HandResult],
     *,
     palm_labels: dict[str, str] | None = None,
+    openness: dict[str, float] | None = None,
 ) -> None:
     h, w = frame.shape[:2]
     labels = palm_labels or {}
+    scores = openness or {}
     for hand in hands:
         pts = []
         for lm in hand.landmarks:
@@ -52,7 +54,9 @@ def draw_hands(
         if label:
             wx = int(hand.landmarks[0][0] * (w - 1))
             wy = int(hand.landmarks[0][1] * (h - 1)) - 12
-            ui.put_text(frame, label, (wx - 28, wy), scale=0.42, color=color, weight=2)
+            score = scores.get(hand.handedness)
+            text = label if score is None else f"{label} {score:.2f}"
+            ui.put_text(frame, text, (wx - 34, wy), scale=0.42, color=color, weight=2)
 
 
 def draw_steering_wheel(frame: np.ndarray, state: CarControlState) -> None:

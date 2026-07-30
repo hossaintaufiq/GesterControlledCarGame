@@ -33,14 +33,17 @@ class CarControlState:
     pedal_label: str = "COAST"
     left_palm: str = "—"
     right_palm: str = "—"
+    left_openness: float = 0.0
+    right_openness: float = 0.0
 
 
 class GestureDriver:
-    STEER_GAIN = 1.85
-    WHEEL_MAX_ANGLE = 0.48
-    MIN_HAND_SCORE = 0.50
+    STEER_GAIN = 1.15
+    WHEEL_MAX_ANGLE = 0.72
+    MIN_HAND_SCORE = 0.30
     PEDAL_CONFIRM = 3
-    TRACKING_GRACE_FRAMES = 3
+    TRACKING_GRACE_FRAMES = 4
+    SENSITIVITY_RANGE = (0.4, 1.6)
 
     def __init__(self) -> None:
         self.mode = ControlMode.WHEEL
@@ -59,6 +62,17 @@ class GestureDriver:
         self.steer.reset()
         self._gas_streak = 0
         self._brake_streak = 0
+
+    @property
+    def sensitivity(self) -> float:
+        return self.steer.sensitivity
+
+    def adjust_sensitivity(self, delta: float) -> float:
+        low, high = self.SENSITIVITY_RANGE
+        self.steer.sensitivity = round(
+            min(high, max(low, self.steer.sensitivity + delta)), 2
+        )
+        return self.steer.sensitivity
 
     def update(self, hands: list[HandResult], *, enabled: bool) -> CarControlState:
         reliable = [h for h in hands if h.score >= self.MIN_HAND_SCORE]
@@ -106,6 +120,8 @@ class GestureDriver:
             active=True,
             left_palm=raw.get("left_palm", "—"),
             right_palm=raw.get("right_palm", "—"),
+            left_openness=raw.get("left_openness", 0.0),
+            right_openness=raw.get("right_openness", 0.0),
         )
 
     def _state(
@@ -116,6 +132,8 @@ class GestureDriver:
         active: bool,
         left_palm: str = "—",
         right_palm: str = "—",
+        left_openness: float = 0.0,
+        right_openness: float = 0.0,
     ) -> CarControlState:
         return CarControlState(
             steer=steer,
@@ -128,6 +146,8 @@ class GestureDriver:
             pedal_label=self._pedal_text(self._smooth_throttle, self._smooth_brake),
             left_palm=left_palm,
             right_palm=right_palm,
+            left_openness=left_openness,
+            right_openness=right_openness,
         )
 
     def _wheel_controls(self, hands: list[HandResult]) -> dict:
@@ -148,6 +168,8 @@ class GestureDriver:
             "brake": brake,
             "left_palm": left_read.label,
             "right_palm": right_read.label,
+            "left_openness": left_read.openness,
+            "right_openness": right_read.openness,
         }
 
     def _pointer_controls(self, hand: HandResult) -> dict:
@@ -178,6 +200,8 @@ class GestureDriver:
             "brake": brake,
             "left_palm": label if side == "Left" else "—",
             "right_palm": label if side == "Right" else "—",
+            "left_openness": reading.openness if side == "Left" else 0.0,
+            "right_openness": reading.openness if side == "Right" else 0.0,
         }
 
     def _pedals_from_palms(self, left: PalmState, right: PalmState) -> tuple[float, float]:
@@ -225,9 +249,9 @@ class GestureDriver:
 
     @staticmethod
     def _steer_text(steer: float) -> str:
-        if steer < -0.15:
+        if steer < -0.28:
             return "LEFT"
-        if steer > 0.15:
+        if steer > 0.28:
             return "RIGHT"
         return "CENTER"
 

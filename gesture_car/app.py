@@ -48,6 +48,7 @@ class GestureCarApp:
         print("  M    = toggle wheel / pointer mode")
         print("  K    = toggle arrow keys / WASD")
         print("  G    = open Slow Roads")
+        print("  [ ]  = steering sensitivity down / up")
         print("  H    = help overlay")
         print("  Q    = quit")
         print()
@@ -72,6 +73,10 @@ class GestureCarApp:
                     palm_labels={
                         "Left": state.left_palm,
                         "Right": state.right_palm,
+                    },
+                    openness={
+                        "Left": state.left_openness,
+                        "Right": state.right_openness,
                     },
                 )
                 draw_steering_wheel(frame, state)
@@ -133,11 +138,15 @@ class GestureCarApp:
             self.show_help = not self.show_help
         if key in (ord("g"), ord("G")):
             webbrowser.open(self.GAME_URL)
+        if key in (ord("["), ord("-")):
+            print("Steering sensitivity:", self.driver.adjust_sensitivity(-0.1))
+        if key in (ord("]"), ord("=")):
+            print("Steering sensitivity:", self.driver.adjust_sensitivity(+0.1))
         return True
 
     def _help_lines(self) -> list[str]:
         return [
-            "Tilt hands = steer",
+            "Tilt hands = steer   [ ] = sensitivity",
             "Both closed = gas | both open = brake",
             "TAB start | G game | H hide | Q quit",
         ]

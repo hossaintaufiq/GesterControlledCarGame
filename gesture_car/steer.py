@@ -10,12 +10,13 @@ from dataclasses import dataclass
 class SteerSmoother:
     """Two-stage steer smoothing with circular angle handling."""
 
-    output_alpha: float = 0.13
-    fast_alpha: float = 0.34
-    angle_alpha: float = 0.22
-    pointer_alpha: float = 0.24
-    deadzone: float = 0.08
-    max_rate: float = 0.09
+    sensitivity: float = 1.0
+    output_alpha: float = 0.11
+    fast_alpha: float = 0.26
+    angle_alpha: float = 0.20
+    pointer_alpha: float = 0.22
+    deadzone: float = 0.16
+    max_rate: float = 0.07
 
     _output: float = 0.0
     _sin_v: float = 0.0
@@ -24,19 +25,17 @@ class SteerSmoother:
     _has_pointer: bool = False
 
     def from_wheel_angle(self, angle: float, max_angle: float) -> float:
-        target = max(-1.0, min(1.0, angle / max_angle))
         self._sin_v = self._lerp(self._sin_v, math.sin(angle), self.angle_alpha)
         self._cos_v = self._lerp(self._cos_v, math.cos(angle), self.angle_alpha)
         filtered = math.atan2(self._sin_v, self._cos_v) / max_angle
-        filtered = max(-1.0, min(1.0, filtered))
-        return self._push_output(filtered)
+        return self._push_output(filtered * self.sensitivity)
 
     def from_pointer_x(self, palm_x: float, gain: float) -> float:
         if not self._has_pointer:
             self._pointer_x = palm_x
             self._has_pointer = True
         self._pointer_x = self._lerp(self._pointer_x, palm_x, self.pointer_alpha)
-        target = max(-1.0, min(1.0, (self._pointer_x - 0.5) * gain))
+        target = (self._pointer_x - 0.5) * gain * self.sensitivity
         return self._push_output(target)
 
     def read(self) -> float:
@@ -53,7 +52,7 @@ class SteerSmoother:
         self._has_pointer = False
 
     def _push_output(self, target: float) -> float:
-        target = self._apply_deadzone(target)
+        target = self._apply_deadzone(max(-1.0, min(1.0, target)))
         delta = target - self._output
         # Suppress small landmark jitter while following deliberate turns quickly.
         movement = min(1.0, abs(delta) / 0.45)

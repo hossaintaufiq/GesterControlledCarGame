@@ -1,4 +1,4 @@
-"""Accurate palm open/closed detection with hysteresis and debouncing."""
+"""Palm open/closed detection with hysteresis and debouncing."""
 
 from __future__ import annotations
 
@@ -10,29 +10,26 @@ import numpy as np
 from gesture_car.tracker import HandResult
 
 WRIST = 0
-THUMB_TIP = 4
-THUMB_IP = 3
-THUMB_MCP = 2
 INDEX_TIP = 8
 INDEX_PIP = 6
-INDEX_MCP = 5
 MIDDLE_TIP = 12
 MIDDLE_PIP = 10
-MIDDLE_MCP = 9
 RING_TIP = 16
 RING_PIP = 14
-RING_MCP = 13
 PINKY_TIP = 20
 PINKY_PIP = 18
-PINKY_MCP = 17
 
-FINGERS = (
-    (THUMB_TIP, THUMB_IP, THUMB_MCP),
-    (INDEX_TIP, INDEX_PIP, INDEX_MCP),
-    (MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP),
-    (RING_TIP, RING_PIP, RING_MCP),
-    (PINKY_TIP, PINKY_PIP, PINKY_MCP),
+# (tip, pip) pairs for the four fingers that reliably distinguish fist vs palm.
+CURL_PAIRS = (
+    (INDEX_TIP, INDEX_PIP),
+    (MIDDLE_TIP, MIDDLE_PIP),
+    (RING_TIP, RING_PIP),
+    (PINKY_TIP, PINKY_PIP),
 )
+
+# Distance ratios (tip-to-wrist / pip-to-wrist) measured for curled vs straight.
+CURLED_RATIO = 1.05
+STRAIGHT_RATIO = 1.38
 
 
 class PalmState(Enum):
@@ -60,20 +57,22 @@ class _HandMemory:
 
 @dataclass
 class PalmAnalyzer:
-    """Scale-invariant palm classifier with temporal stability."""
+    """Rotation- and scale-invariant palm classifier with temporal stability."""
 
-    min_hand_score: float = 0.62
-    closed_enter: float = 0.28
-    closed_exit: float = 0.40
+    # Handedness score only tells us left-vs-right certainty, so it must stay
+    # low here or angled hands stop updating their gesture entirely.
+    min_hand_score: float = 0.30
+    closed_enter: float = 0.25
+    closed_exit: float = 0.42
     open_enter: float = 0.72
-    open_exit: float = 0.60
-    confirm_frames: int = 3
-    openness_smooth: float = 0.42
+    open_exit: float = 0.55
+    confirm_frames: int = 2
+    median_window: int = 5
+    openness_smooth: float = 0.45
     _memory: dict[str, _HandMemory] = field(default_factory=dict)
 
     def analyze(self, hand: HandResult) -> PalmReading:
-        key = hand.handedness
-        mem = self._memory.setdefault(key, _HandMemory())
+        mem = self._memory.setdefault(hand.handedness, _HandMemory())
 
         if hand.score < self.min_hand_score:
             return PalmReading(
@@ -83,14 +82,11 @@ class PalmAnalyzer:
                 label=self._label(mem.state),
             )
 
-        raw_open = self._measure_openness(hand.landmarks)
-        mem.samples.append(raw_open)
-        if len(mem.samples) > 5:
+        mem.samples.append(self._measure_openness(hand.landmarks))
+        if len(mem.samples) > self.median_window:
             mem.samples.pop(0)
         median_open = float(np.median(mem.samples))
-        mem.openness_ema = self._lerp(
-            mem.openness_ema, median_open, self.openness_smooth,
-        )
+        mem.openness_ema = self._lerp(mem.openness_ema, median_open, self.openness_smooth)
         openness = mem.openness_ema
 
         if mem.state == PalmState.CLOSED and openness < self.closed_exit:
@@ -128,40 +124,18 @@ class PalmAnalyzer:
 
     @staticmethod
     def _measure_openness(lms: np.ndarray) -> float:
-        """Orientation- and scale-resistant palm openness score."""
-        palm_size = float(np.linalg.norm(lms[MIDDLE_MCP][:2] - lms[WRIST][:2]))
-        palm_size = max(palm_size, 0.04)
-        palm_center = np.mean(
-            lms[[WRIST, INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP], :2],
-            axis=0,
-        )
+        """0 = fist, 1 = open palm, independent of hand size and rotation."""
+        wrist = lms[WRIST][:2]
 
-        extensions: list[float] = []
-        for tip, pip, mcp in FINGERS[1:]:
-            lower = lms[pip][:2] - lms[mcp][:2]
-            upper = lms[tip][:2] - lms[pip][:2]
-            denom = max(float(np.linalg.norm(lower) * np.linalg.norm(upper)), 1e-6)
-            straightness = float(np.dot(lower, upper) / denom)
-            straight_score = float(np.clip((straightness + 0.15) / 1.05, 0.0, 1.0))
+        span = STRAIGHT_RATIO - CURLED_RATIO
+        scores: list[float] = []
+        for tip, pip in CURL_PAIRS:
+            tip_dist = float(np.linalg.norm(lms[tip][:2] - wrist))
+            pip_dist = float(np.linalg.norm(lms[pip][:2] - wrist))
+            ratio = tip_dist / max(pip_dist, 1e-6)
+            scores.append(float(np.clip((ratio - CURLED_RATIO) / span, 0.0, 1.0)))
 
-            reach = float(np.linalg.norm(lms[tip][:2] - palm_center) / palm_size)
-            reach_score = float(np.clip((reach - 0.72) / 1.05, 0.0, 1.0))
-            ext = straight_score * 0.58 + reach_score * 0.42
-            extensions.append(ext)
-
-        thumb_reach = float(
-            np.linalg.norm(lms[THUMB_TIP][:2] - palm_center) / palm_size
-        )
-        thumb_score = float(np.clip((thumb_reach - 0.55) / 0.9, 0.0, 1.0))
-        spread = float(np.linalg.norm(lms[INDEX_TIP][:2] - lms[PINKY_TIP][:2]))
-        spread_norm = float(np.clip((spread / palm_size - 0.55) / 0.85, 0.0, 1.0))
-
-        finger_open = float(np.mean(extensions))
-        return float(np.clip(
-            finger_open * 0.72 + spread_norm * 0.18 + thumb_score * 0.10,
-            0.0,
-            1.0,
-        ))
+        return float(np.clip(float(np.mean(scores)), 0.0, 1.0))
 
     @staticmethod
     def _label(state: PalmState) -> str:
